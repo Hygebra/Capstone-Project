@@ -293,9 +293,9 @@ FlexGen的真正创新在于将多种技术有机组合，形成一个协同工�
 ![这是图片](/Co-Inference_Tutorial/images/table2.png "表2")
 在模型参数量和已有计算资源差距极为悬殊的情况下，FlexGen展现出来其优势。相比于DeepSpeed、Accelerate，吞吐提升100倍，首次在单16GB GPU上达到1 token/s吞吐。
 
-## 3实现流程及对应核心代码
+## 3实现流程
 ### 3.1 安装环境
-Miniconda是轻量级的Python环境管理工具，比完整Anaconda更轻便。
+Miniconda是轻量级的Python环境管理工具，比完整Anaconda更轻便，特别适合深度学习项目。
 **步骤1：安装miniconda**
 ```bash
 # Linux系统
@@ -330,17 +330,8 @@ pip install -r requirements.txt
 export HF_ENDPOINT=https://hf-mirror.com
 ```
 ### 3.3 核心配置详解
-#### 3.3.1 文件结构
-```
-FLEXGEN
-├── flexllmgen/          # FlexGen相关模块目录
-├── images/              # 实验相关图片目录
-├── flexgen_demo.py      # FlexGen协同推理脚本
-├── onlygpu_demo.py      # 纯GPU推理脚本
-├── README.md            # 实验指南文档
-└── requirements.txt     # 依赖包清单
-```
-#### 3.3.2 demo配置接口
+
+#### 3.3.1 demo配置接口
 
 
 | 参数 | 归属脚本 | 作用描述 |
@@ -356,278 +347,152 @@ FLEXGEN
 | --max-input-length | FlexGen | 输入文本的最大长度（超过则截断，确保输入格式统一） |
 | --temperature | FlexGen | 生成温度（0-1，值越高输出多样性越强，越低越确定） |
 
-### 3.4 完整运行流程
-#### 3.4.1 运行第一个推理任务
+#### 3.3.2 运行第一个推理任务
 ```bash
 ##第一次使用会下载对应模型
 python flexgen_demo.py
 ```
 ![这是图片](/Co-Inference_Tutorial/images/默认flexgen.png "默认运行")
 
-#### 
-3.4.2 代码
-**1：flexgen_demo.py**
-```python
-import argparse
-import torch
-import time  # 用于计时
-from transformers import AutoTokenizer
-from flexllmgen.flex_opt import OptLM, Policy, ExecutionEnv
-from flexllmgen.opt_config import get_opt_config
-from flexllmgen.pytorch_backend import TorchDevice, TorchDisk, TorchMixedDevice
+## 4 项目框架
 
-def main():
-    # ========== 外部参数接口定义（所有可调整参数） ==========
-    parser = argparse.ArgumentParser(description="FlexGen参数化推理脚本（支持OPT模型）")
-    
-    # 1. 模型与硬件配置
-    parser.add_argument("--model", type=str, default="facebook/opt-1.3b",
-                        help="Hugging Face模型ID（如facebook/opt-1.3b）")
-    parser.add_argument("--gpu-memory", type=int, default=6,
-                        help="GPU显存分配上限（GB）")
-    parser.add_argument("--cpu-memory", type=int, default=16,
-                        help="CPU内存分配上限（GB）")
-    parser.add_argument("--percent", nargs="+", type=int, 
-                        default=[10, 90, 100, 0, 100, 0],
-                        help="6个数字：[权重GPU%, 权重CPU%, 缓存GPU%, 缓存CPU%, 激活值GPU%, 激活值CPU%]")
-    
-    # 2. 批量处理参数
-    parser.add_argument("--gpu-batch-size", type=int, default=2,
-                        help="单GPU的批处理大小（原hardcode的2）")
-    parser.add_argument("--num-gpu-batches", type=int, default=1,
-                        help="GPU上的总批次数（原hardcode的1，单卡场景通常为1）")
-    
-    # 3. 输入与生成配置
-    parser.add_argument("--prompt", type=str, default="what is AI",
-                        help="输入的提示文本（原hardcode的'what is AI'）")
-    parser.add_argument("--max-input-length", type=int, default=32,
-                        help="输入文本的最大长度（超过截断，原hardcode的32）")
-    parser.add_argument("--max-new-tokens", type=int, default=32,
-                        help="生成的新token数量（原hardcode的32）")
-    parser.add_argument("--temperature", type=float, default=0.7,
-                        help="生成温度（0-1，越高多样性越强，原hardcode的0.7）")
-    
-    # 解析参数
-    args = parser.parse_args()
-
-    # ========== 2. 初始化设备（CPU+GPU协同） ==========
-    gpu = TorchDevice("cuda:0")
-    cpu = TorchDevice("cpu")
-    disk = TorchDisk("./offload_dir")
-    env = ExecutionEnv(gpu=gpu, cpu=cpu, disk=disk, mixed=TorchMixedDevice([gpu, cpu, disk]))
-
-    # ========== 3. 定义Offloading策略（使用外部参数） ==========
-    policy = Policy(
-        gpu_batch_size=args.gpu_batch_size,          # 外部参数：单GPU批大小
-        num_gpu_batches=args.num_gpu_batches,        # 外部参数：总批次数
-        w_gpu_percent=args.percent[0],
-        w_cpu_percent=args.percent[1],
-        cache_gpu_percent=args.percent[2],
-        cache_cpu_percent=args.percent[3],
-        act_gpu_percent=args.percent[4],
-        act_cpu_percent=args.percent[5],
-        overlap=True,
-        sep_layer=True,
-        pin_weight=True,
-        cpu_cache_compute=False,
-        attn_sparsity=1.0,
-        compress_weight=False,
-        comp_weight_config=None,
-        compress_cache=False,
-        comp_cache_config=None
-    )
-
-    # 打印当前参数配置（方便实验记录）
-    print("===== 当前运行参数 =====")
-    print(f"模型：{args.model} | GPU显存：{args.gpu_memory}GB | CPU内存：{args.cpu_memory}GB")
-    print(f"Offloading策略：权重[{args.percent[0]}%GPU, {args.percent[1]}%CPU] | "
-          f"缓存[{args.percent[2]}%GPU, {args.percent[3]}%CPU] | "
-          f"激活值[{args.percent[4]}%GPU, {args.percent[5]}%CPU]")
-    print(f"批量配置：单GPU批大小={args.gpu_batch_size} | 总批次数={args.num_gpu_batches}")
-    print(f"生成配置：输入长度={args.max_input_length} | 新token数={args.max_new_tokens} | 温度={args.temperature}")
-    print(f"输入prompt：{args.prompt}")
-    print("=========================\n")
-
-    # ========== 4. 加载模型配置和分词器 ==========
-    opt_config = get_opt_config(args.model)
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
-    # 修复OPT模型无pad_token的问题
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        print(f"已自动设置pad_token为：{tokenizer.pad_token}")
-
-    # ========== 5. 初始化模型（计时） ==========
-    print(f"从镜像站下载模型 {args.model}（CPU+GPU协同）...")
-    start_load = time.time()  # 记录加载开始时间
-    model = OptLM(
-        config=opt_config,
-        env=env,
-        path="~/.cache/huggingface/hub",
-        policy=policy
-    )
-    load_time = time.time() - start_load  # 模型加载时间
-    print(f"模型加载完成，耗时：{load_time:.2f}秒")
-
-    # ========== 6. 准备输入（使用外部prompt参数） ==========
-    inputs = tokenizer(
-        args.prompt,  # 外部参数：输入文本
-        padding="max_length",
-        max_length=args.max_input_length,  # 外部参数：输入长度
-        truncation=True,
-        return_tensors="pt"
-    ).input_ids.numpy()
-    # 计算总样本数（批大小×批次数）
-    total_samples = args.gpu_batch_size * args.num_gpu_batches
-    inputs = [inputs[0]] * total_samples  # 适配总样本数
-    print(f"\n输入文本处理完成，总样本数：{total_samples}")
-
-    # ========== 7. 推理（计时+统计吞吐） ==========
-    print("开始推理...")
-    start_infer = time.time()  # 记录推理开始时间
-    output_ids = model.generate(
-        inputs=inputs,
-        max_new_tokens=args.max_new_tokens,  # 外部参数：新token数
-        do_sample=True,
-        temperature=args.temperature,        # 外部参数：温度
-    )
-    infer_time = time.time() - start_infer  # 推理总时间
-
-    # 计算吞吐率（总生成token数 / 推理时间）
-    total_generated_tokens = total_samples * args.max_new_tokens  # 总生成token数
-    throughput = total_generated_tokens / infer_time  # 吞吐率（tokens/秒）
-
-    # ========== 8. 输出结果 ==========
-    outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)
-    print("\n===== 生成结果 =====")
-    for i, out in enumerate(outputs):
-        print(f"样本 {i+1}:\n{out}\n")
-
-    # 输出时间和吞吐统计
-    print("===== 性能指标 =====")
-    print(f"模型加载时间：{load_time:.2f}秒")
-    print(f"推理总时间：{infer_time:.2f}秒")
-    print(f"总生成token数：{total_generated_tokens}")
-    print(f"吞吐率：{throughput:.2f} tokens/秒")  # 每秒生成的token数
-    
-
-if __name__ == "__main__":
-    main()
+### 4.1 项目结构
 ```
-**2：onlygpu_demo.py**
+FLEXGEN/                  # 项目根目录
+├─ flexllmgen/            # 核心模块包
+│  ├─ __init__.py         
+│  ├─ compression.py      # 张量压缩/解压缩逻辑
+│  ├─ flex_opt.py         # OPT模型核心推理逻辑
+│  ├─ opt_config.py       # 模型配置
+│  ├─ pytorch_backend.py  # PyTorch底层支撑
+│  ├─ timer.py            # 性能计时工具
+│  └─ utils.py            # 通用工具类
+├─ images/                
+├─ flexgen_demo.py        # FlexGen功能演示脚本（完整流程示例）
+├─ onlygpu_demo.py        # 仅使用GPU的演示脚本（对比不同部署方式）
+├─ README.md              # 项目说明文档
+└─ requirements.txt       # 项目依赖列表
+```
+### 4.2 flexllmgen 模块详解
+
+#### 4.2.1 flexllmgen/utils.py
+提供工程中各模块依赖的基础工具，核心功能包括：
+
+- **ValueHolder**：轻量级值存储容器，支持store（存储）、pop（取出并清空）、clear（清空）操作，用于在不同组件间安全传递临时数据（如权重、缓存）
+
+- **Task**：生成任务的数据类，封装输入数据、提示长度、生成长度、采样策略（do_sample）、温度参数等任务相关配置。
+
+- **内存管理工具**：cpu_mem_stats/torch_mem_stats用于统计 CPU/GPU 张量的内存占用，辅助调试内存泄漏。
+
+- **数组工具**：array_1d/array_2d/array_3d/array_4d快速创建指定维度的数组（元素为指定类实例，如ValueHolder），用于初始化多层缓存或隐藏状态。
+
+#### 4.2.2 flexllmgen/flex_opt.py
+实现基于 OPT 架构的大语言模型推理流程，是工程的核心，包含：
+
+- 模型组件：
+  - **InputEmbed/OutputEmbed**：输入 / 输出嵌入层，负责将 token ID 转换为向量（输入）和向量转换为 token 概率（输出），依赖pytorch_backend的嵌入计算。
+
+  - **SelfAttention/MLP**：注意力机制和多层感知机，实现 Transformer 层的核心计算，调用pytorch_backend的mha（预填充）/mha_gen（解码）和mlp函数。
+
+  - **TransformerLayer**：聚合SelfAttention和MLP，构成 Transformer 基本单元。
+
+  - **OptLM**：模型入口类，管理权重加载、缓存初始化、生成循环调度。
+
+- 生成流程：通过load_hidden（加载隐藏状态）、compute_layer（层计算）、store_cache（存储缓存）等方法串联推理过程，依赖compression进行权重 / 缓存压缩。
+
+#### 4.2.3 flexllmgen/compression.py
+实现张量的量化压缩（如 4-bit 分组量化），减少内存占用，核心功能：
+
+- **CompressionConfig**：压缩配置类，定义量化位数（num_bits）、分组大小（group_size）、分组维度（group_dim）等参数。
+
+- **TorchCompressedDevice**：压缩设备类，提供compress（量化压缩）和decompress（解压缩）方法，用于处理权重和 KV 缓存的压缩存储。
+
+- **压缩算法**：通过分组量化将浮点张量转为低精度存储（如 4-bit），配合缩放因子（scale）和解偏移（mn）还原数据，被flex_opt中的注意力层和权重加载逻辑调用。
+
+
+#### 4.2.4 flexllmgen/opt_config.py
+定义模型参数和资源计算，包括：
+
+- **模型大小计算**：model_bytes计算模型权重总字节数，cache_bytes/hidden_bytes计算缓存和隐藏状态的内存占用，辅助资源分配。
+
+- **权重下载**：download_opt_weights_old从 Hugging Face 下载 OPT/BLOOM 等模型的权重，并转换为 numpy 格式存储，为flex_opt的权重加载提供数据源。
+
+#### 4.2.5 flexllmgen/pytorch_backend.py
+封装 PyTorch 的张量操作和设备管理，是模型计算的底层支撑：
+
+- **设备管理**：TorchDevice封装 CPU/GPU 设备，提供内存分配（allocate）、设备间数据迁移等功能；DeviceType枚举设备类型（CPU/CUDA/COMPRESSED 等）。
+
+- **张量封装**：TorchTensor统一管理不同设备（内存 / 磁盘 / 压缩）的张量，支持copy/move/load_from_np等操作，适配flex_opt中的数据传递需求。
+
+- **核心计算**：实现opt_input_embed（输入嵌入）、opt_output_embed（输出嵌入）、mha（多头注意力预填充）、mha_gen（解码阶段注意力）等底层计算函数，被flex_opt的各层直接调用。
+
+#### 4.2.6 flexllmgen/timer.py
+提供轻量级计时工具，用于统计推理各阶段耗时：
+
+- **Timers**：计时器组类，支持创建多个命名计时器（_Timer），通过start()/stop()记录时间，在flex_opt的生成循环中用于统计预热延迟、解码吞吐量等性能指标。
+
+### 4.3 运行流程
+#### 4.3.1 初始化阶段
+
+- 调用 opt_config.download_opt_weights_old 下载并转换模型权重到本地
+- flex_opt.OptLM 初始化：加载模型配置（opt_config），创建设备环境（pytorch_backend.TorchDevice），初始化权重（调用 compression 压缩）。
+- 通过 utils.Task 定义生成任务（输入、长度、采样策略等）。
 ```python
-import argparse
-import time
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+# 简化代码
+from flex_opt import OptLM
+from opt_config import download_opt_weights_old
+from utils import Task
 
-def main():
-    parser = argparse.ArgumentParser()
-    # 与FlexGen版本保持一致的参数接口
-    parser.add_argument("--model", type=str, default="facebook/opt-1.3b")
-    parser.add_argument("--prompt", type=str, default="what is AI", help="输入提示文本")
-    parser.add_argument("--max-new-tokens", type=int, default=64, help="生成的新token数量")
-    parser.add_argument("--gpu-batch-size", type=int, default=2, help="单GPU批大小")
-    args = parser.parse_args()
-
-    # 检查GPU是否可用
-    if not torch.cuda.is_available():
-        raise RuntimeError("纯GPU推理需要CUDA环境，请确保GPU可用")
-    device = torch.device("cuda:0")
-    print(f"使用GPU设备：{device}")
-
-    # 加载分词器
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token  # 修复pad_token
-
-    # 加载模型（纯GPU，全部参数放GPU）
-    print("\n===== 开始加载模型（纯GPU） =====")
-    start_load = time.time()
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        torch_dtype=torch.float16,  # 用半精度节省显存
-        device_map="auto"  # 自动将模型加载到GPU
-    ).to(device)
-    model.eval()  # 推理模式
-    load_time = time.time() - start_load
-    print(f"模型加载完成，耗时：{load_time:.2f}秒")
-
-    # 准备输入（批量处理）
-    inputs = tokenizer(
-        [args.prompt] * args.gpu_batch_size,  # 复制prompt生成批量输入
-        padding="max_length",
-        max_length=32,
-        truncation=True,
-        return_tensors="pt"
-    ).to(device)  # 输入放GPU
-    total_samples = args.gpu_batch_size
-    print(f"\n输入文本：{args.prompt} | 总样本数：{total_samples}")
-
-    # 推理（计时）
-    print("\n===== 开始推理（纯GPU） =====")
-    start_infer = time.time()
-    with torch.no_grad():  # 关闭梯度计算，节省显存
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=args.max_new_tokens,
-            do_sample=True,
-            temperature=0.8,
-            top_p=0.9,
-            repetition_penalty=1.2,
-            pad_token_id=tokenizer.pad_token_id
-        )
-    infer_time = time.time() - start_infer  # 推理耗时
-
-    # 计算吞吐（总生成token数 / 推理时间）
-    total_generated_tokens = total_samples * args.max_new_tokens  # 总生成token数
-    throughput = total_generated_tokens / infer_time  # 吞吐率（tokens/秒）
-
-    # 输出结果
-    outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)
-    print("\n===== 生成结果 =====")
-    for i, out in enumerate(outputs):
-        print(f"样本 {i+1}:\n{out}\n")
-
-    # 输出时间和吞吐统计
-    print("===== 性能指标 =====")
-    print(f"模型加载时间：{load_time:.2f}秒")
-    print(f"推理时间（总）：{infer_time:.2f}秒")
-    print(f"总生成token数：{total_generated_tokens}")
-    print(f"吞吐率：{throughput:.2f} tokens/秒")
-
-if __name__ == "__main__":
-    main()
+# 下载权重
+download_opt_weights_old("opt-1.3b", "./weights")
+# 初始化模型
+model = OptLM(config, env, "./weights", policy)
+# 定义任务
+task = Task(inputs=input_ids, prompt_len=32, gen_len=64, do_sample=True)
 ```
 
-## 4 对比实验（示例）
-验证 FlexGen 相比纯 GPU 推理的三大优势：
-- **显存节省能力**：在相同模型下，GPU 显存占用显著更低；
-
-- **超显存运行能力**：能运行纯 GPU 因显存不足无法加载的大模型；
-
-- **资源灵活性**：通过调整 Offloading 策略，平衡显存占用与推理速度。
-
-### 4.1 相同小规模模型下的 “显存 - 速度” 对比
+#### 4.3.1 生成阶段
+- **输入嵌入**：InputEmbed.forward 调用 pytorch_backend 的 opt_input_embed，将 token ID 转换为嵌入向量，依赖 ValueHolder 传递权重（w_token/w_pos）。
+- **Transformer 层计算**：
+   - 预填充阶段（i=0）：SelfAttention.forward 调用 mha 计算多头注意力，生成初始 KV 缓存。
+   - 解码阶段（i>0）：SelfAttention.forward 调用 mha_gen，更新 KV 缓存。
+   - MLP 层计算：MLP.forward 调用 pytorch_backend 的 mlp 函数，完成前馈网络计算。
+- **输出嵌入**：OutputEmbed.forward 调用 opt_output_embed，将最终隐藏状态转换为 token 概率，采样生成下一个 token。
+```python
+# 生成循环核心（flex_opt.generation_loop_normal）
+for i in range(gen_len):
+    for j in range(num_layers):
+        # 加载权重和缓存
+        model.load_weight(i, j, k)
+        model.load_cache(i, j, k)
+        # 计算当前层（注意力+MLP）
+        model.compute_layer(i, j, k)  # 调用pytorch_backend的计算函数
+        # 存储结果
+        model.store_hidden(i, j, k)
+        model.store_cache(i, j, k)
+```
+## 5. 对比实验
+### 5.1 相同小规模模型下的 “显存 - 速度” 对比
 
 **目的**：验证 FlexGen 在显存占用上的优势，以及速度的可接受损失。
 
 **模型**：facebook/opt-1.3b（纯 GPU 可正常运行）。
 
-#### 4.1.1 运行纯 GPU 脚本：
+#### 5.1.1 运行纯 GPU 脚本：
 ```bash
 python onlygpu_demo.py --model facebook/opt-1.3b --max-new-tokens 64
 ```
 ![这是图片](/Co-Inference_Tutorial/images/显存速度图一.png "显存速度图一")
 ![这是图片](/Co-Inference_Tutorial/images/显存速度图一附属.png "显存速度图一附属")
 
-#### 4.1.2 运行 FlexGen 脚本（低 GPU 占比策略）
+#### 5.1.2 运行 FlexGen 脚本（低 GPU 占比策略）
 ```bash
 python flexgen_demo.py --model facebook/opt-1.3b --max-new-tokens 64 --percent 10 90 0 100 0 100 --cpu-memory 30
 ```
 ![这是图片](/Co-Inference_Tutorial/images/显存速度图二.png "显存速度图二")
 ![这是图片](/Co-Inference_Tutorial/images/显存速度图二附属.png "显存速度图二附属")
 
-#### 4.1.3 运行加大 FlexGen 的 GPU 占比
+#### 5.1.3 运行加大 FlexGen 的 GPU 占比
 ```bash
 python flexgen_demo.py --model facebook/opt-1.3b --max-new-tokens 64 --percent 90 10 100 0 100 0 --cpu-memory 30
 ```
@@ -636,19 +501,19 @@ python flexgen_demo.py --model facebook/opt-1.3b --max-new-tokens 64 --percent 9
 
 **结论**：FlexGen当GPU占比较小时推理速度略慢，但生成结果质量一致，当GPU占比上升时和纯GPU差距不大。
 
-### 4.2 超显存模型的 “可行性” 对比
+### 5.2 超显存模型的 “可行性” 对比
 
 **目的**：验证 FlexGen 能运行纯 GPU 因显存不足无法加载的模型（核心优势）。
 
 **模型**：facebook/opt-6.7b（13GB 权重，8GB GPU 纯跑 OOM）。
 
-#### 4.2.1 尝试运行纯 GPU 脚本：
+#### 5.2.1 尝试运行纯 GPU 脚本：
 ```bash
 python onlygpu_demo.py --model facebook/opt-6.7b
 ```
 ![这是图片](/Co-Inference_Tutorial/images/爆显存图一.png "爆显存图一")
 
-#### 4.2.2 运行 FlexGen 脚本（高 CPU / 磁盘 Offloading）：
+#### 5.2.2 运行 FlexGen 脚本（高 CPU / 磁盘 Offloading）：
 ```bash
 python flexgen_demo.py --model facebook/opt-6.7b --max-new-tokens 64 --percent 20 80 0 100 0 100 --cpu-memory 30 --gpu-memory 8
 ```
@@ -658,25 +523,25 @@ python flexgen_demo.py --model facebook/opt-6.7b --max-new-tokens 64 --percent 2
 **结论**：纯 GPU 直接报错，无法运行；
 FlexGen 通过将大部分权重放到 CPU，成功加载并生成结果，证明其 “超显存运行能力”。
 
-### 4.3 不同 Offloading 策略的 “灵活性” 验证
+### 5.3 不同 Offloading 策略的 “灵活性” 验证
 
 **目的**：展示 FlexGen 可通过调整--percent参数，平衡显存占用与速度（纯 GPU 无此灵活性）。
 
 **模型**：facebook/opt-1.3b。
 
-#### 4.3.1 极端 CPU Offloading：
+#### 5.3.1 极端 CPU Offloading：
 ```bash
 python flexgen_demo.py --model facebook/opt-1.3b --max-new-tokens 64 --percent 5 95 0 100 0 100 --cpu-memory 30 --gpu-memory 8
 ```
 ![这是图片](/Co-Inference_Tutorial/images/低gpu.png "低gpu")
 
-#### 4.3.1 平衡策略：
+#### 5.3.2 平衡策略：
 ```bash
 python flexgen_demo.py --model facebook/opt-1.3b --max-new-tokens 64 --percent 70 30 0 100 0 100 --cpu-memory 30 --gpu-memory 8
 ```
 ![这是图片](/Co-Inference_Tutorial/images/平衡.png "平衡")
 
-#### 4.3.1 高 GPU 占比：
+#### 5.3.3 高 GPU 占比：
 ```bash
 python flexgen_demo.py --model facebook/opt-1.3b --max-new-tokens 64 --percent 90 10 100 0 100 0 --cpu-memory 30 --gpu-memory 8
 ```
@@ -685,7 +550,7 @@ python flexgen_demo.py --model facebook/opt-1.3b --max-new-tokens 64 --percent 9
 
 **结论**：随着 GPU 占比升高，GPU 显存占用递增，推理时间递减（灵活性体现）
 
-## 5 常遇问题
+## 6 常遇问题
 若首次安装conda可能需手动接受条款
 ![这是图片](/Co-Inference_Tutorial/images/接受条款.png "接受条款")
 ```bash
@@ -712,7 +577,7 @@ pip install \
 #添加镜像
 export HF_ENDPOINT=https://hf-mirror.com
 ```
-## 6 总结
+## 7 总结
 FlexGen通过以下核心技术实现了单GPU上的高吞吐大语言模型推理：
 1. **三级存储协同**：GPU+CPU+磁盘的分层内存架构
 2. **LP优化张量调度**：通过求解线性规划问题找到最优张量放置策略
@@ -726,13 +591,14 @@ FlexGen通过以下核心技术实现了单GPU上的高吞吐大语言模型推�
 - 使消费级硬件能够运行百亿级参数模型
 
 
+
 **参考材料**
 - https://github.com/FMInference/FlexLLMGen
 - https://arxiv.org/abs/2303.06865
 
 
 
-## 7 多设备协同延申（有兴趣同学可以尝试）
+## 8 多设备协同延申（有兴趣同学可以尝试）
 上述FlexGen本质上事单设备上参数的卸载协同，真实边缘场景下还可以通过设备间协同来实现高效推理。例如利用PP模式，在多设备间流水执行，参考资料如下：
 ![这是图片](/Co-Inference_Tutorial/images/prima.png "Prima.cpp")
 - https://gitee.com/zonghang-li/prima.cpp
