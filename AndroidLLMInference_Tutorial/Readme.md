@@ -12,7 +12,7 @@ termux-change-repo
 
 更多信息请参考：[Termux镜像使用帮助](https://mirrors.tuna.tsinghua.edu.cn/help/termux/)
 
-<img src="assets\p1.png" alt="image-20251203131852469" style="zoom: 33%;" />
+<img src="assets/p1.png" alt="image-20251203131852469" style="zoom: 33%;" />
 
 1. 安装ssh，提示全部按回车键默认即可。
 
@@ -38,7 +38,7 @@ sshd
 ifconfig
 ```
 
-<img src="assets\p2.png" alt="image-20251203132447073" style="zoom:50%;" />
+<img src="assets/p2.png" alt="image-20251203132447073" style="zoom:50%;" />
 
 5. SSH连接：要求手机电脑在同一局域网内, 输入密码即可ssh连接
 
@@ -48,7 +48,7 @@ ssh 192.168.1.100 -p 8022
 
 (本教程使用MobaXterm作为演示示例)
 
-![image-20251203132351083](assets\p3.png)
+![image-20251203132351083](assets/p3.png)
 
 ### 2. 安装必要的软件包
 
@@ -81,7 +81,7 @@ vulkaninfo
 
 如果一切正常，`vulkaninfo` 将显示 GPU 的相关信息。
 
-<img src="assets\p4.png" alt="image-20251203140712369" style="zoom:50%;" />
+<img src="assets/p4.png" alt="image-20251203140712369" style="zoom:50%;" />
 
 ---
 
@@ -110,7 +110,7 @@ cmake -B build -DGGML_VULKAN=ON -DVulkan_LIBRARY=/system/lib64/libvulkan.so -DVu
 cmake --build build --config Release -j32
 ```
 
-<img src="assets\p5.png" alt="dc0d3b77-fbb1-4407-bcad-ec21769b1854" style="zoom:67%;" />
+<img src="assets/p5.png" alt="dc0d3b77-fbb1-4407-bcad-ec21769b1854" style="zoom:67%;" />
 
 (spawn.h相关的报错可暂时忽略，本地运行可以不支持server服务)
 
@@ -129,7 +129,7 @@ cd build/bin
 ./llama-cli -m /path/to/qwen2-1_5b-instruct-fp16.gguf
 ```
 
-![image-20251203141250603](assets\p6.png)
+![image-20251203141250603](assets/p6.png)
 
 ### 6. 参考资料
 
